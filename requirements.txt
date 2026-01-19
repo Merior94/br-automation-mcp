@@ -1,0 +1,7 @@
+# B&R Automation Studio MCP Server Dependencies
+
+# MCP Python SDK for building Model Context Protocol servers
+mcp>=1.0.0
+
+# OPC UA client for communicating with ARsim
+asyncua>=1.0.0
