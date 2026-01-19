@@ -1,0 +1,31 @@
+{
+  "_comment": "Add this to your Claude Code settings.json",
+  "_comment2": "Windows: %APPDATA%\\Claude\\settings.json | WSL: ~/.claude/settings.json",
+
+  "mcpServers": [
+    {
+      "_comment": "Option A: Native Windows (Recommended)",
+      "name": "br-automation-mcp",
+      "type": "stdio",
+      "command": "python",
+      "args": ["D:\\path\\to\\br-automation-mcp\\server.py"],
+      "enabled": true
+    }
+  ],
+
+  "_mcpServers_wsl_alternative": [
+    {
+      "_comment": "Option B: WSL2 via PowerShell interop",
+      "name": "br-automation-mcp",
+      "type": "stdio",
+      "command": "powershell.exe",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "D:\\path\\to\\br-automation-mcp\\run-server.ps1"
+      ],
+      "enabled": true
+    }
+  ]
+}
