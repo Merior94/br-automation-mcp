@@ -11,19 +11,25 @@ running in WSL2 via PowerShell interop.
 
 import subprocess
 import os
+import re
 import tempfile
 from mcp.server.fastmcp import FastMCP
 from asyncua.sync import Client, ua
 
 # B&R tool paths - adjust these to match your Automation Studio installation
-AS_BUILD_PATH = "C:\\BrAutomation\\AS412\\bin-en\\BR.AS.Build.exe"
-PVI_TRANSFER_PATH = "C:\\BrAutomation\\PVI\\V4.12\\PVI\\Tools\\PVITransfer\\PVITransfer.exe"
+# NOTE: Update these paths based on your installation. Run:
+#   Get-ChildItem 'C:\BrAutomation\' -Recurse -Filter 'BR.AS.Build.exe'
+#   Get-ChildItem 'C:\BrAutomation\' -Recurse -Filter 'PVITransfer.exe'
+AS_BUILD_PATH = "C:\\Program Files (x86)\\BRAutomation\\AS6\\bin-en\\BR.AS.Build.exe"
+AS_RUC_PACKAGE_CREATOR_PATH = "C:\\Program Files (x86)\\BRAutomation\\AS6\\bin-en\\BR.AS.RUCPackageCreator.exe"
+PVI_TRANSFER_PATH = "C:\\BrAutomation\\PVI6\\PVI\\Tools\\PVITransfer\\PVITransfer.exe"
 
 # OPC UA connection defaults for ARsim
+# Leave OPCUA_USERNAME empty to connect anonymously (matches this project's OpcUaMap.uad config)
 OPCUA_HOST = "localhost"
 OPCUA_PORT = 4840
-OPCUA_USERNAME = "Admin"
-OPCUA_PASSWORD = "password"
+OPCUA_USERNAME = ""
+OPCUA_PASSWORD = ""
 
 # OPC UA type conversion map
 OPCUA_TYPE_MAP = {
@@ -43,7 +49,10 @@ def _get_opcua_client():
     """Get or create a cached OPC UA client connection."""
     global _opcua_client
     if _opcua_client is None:
-        url = f"opc.tcp://{OPCUA_USERNAME}:{OPCUA_PASSWORD}@{OPCUA_HOST}:{OPCUA_PORT}/"
+        if OPCUA_USERNAME:
+            url = f"opc.tcp://{OPCUA_USERNAME}:{OPCUA_PASSWORD}@{OPCUA_HOST}:{OPCUA_PORT}/"
+        else:
+            url = f"opc.tcp://{OPCUA_HOST}:{OPCUA_PORT}/"
         _opcua_client = Client(url=url)
         _opcua_client.connect()
     return _opcua_client
@@ -73,16 +82,47 @@ async def build_automation_studio_project(project_file: str, configuration: str)
         configuration: Name of the configuration to build.
 
     Returns:
-        Compiler output. Look for "RUC package created." to confirm success.
-        The RUC package is created at: <project>/Binaries/<config>/<cpu>/RUCPackage/RUCPackage.zip
+        Compiler + RUC packager output. Look for "RUC package created." to confirm success.
+        The RUC package is created at: <project>/Binaries/<config>/RUCPackage/RUCPackage.zip
+
+    Note:
+        BR.AS.Build.exe's own "-buildRUCPackage" flag errors out with
+        "error 511: Missing command line option '-C'" on this AS6 install when combined
+        with "-simulation" (undocumented, unresolved quirk/bug). Building and packaging are
+        therefore done as two separate steps, per B&R's documented command-line RUC workflow:
+        https://help.br-automation.com/#/en/6/automationruntime/enhancedtransfer/handling/export_ruc/export_ruc_commandline.html
+
+        BR.AS.Build.exe also exits with a non-zero return code whenever it reports security
+        risks (e.g. insecure FTP/web server config) or licensing warnings, even when the
+        compile itself has 0 errors. So success is determined by parsing the
+        "Build: N error(s), ..." summary line rather than trusting the process return code.
     """
     result = subprocess.run(
-        [AS_BUILD_PATH, project_file, "-c", configuration, "-buildMode", "Rebuild", "-simulation", "-buildRUCPackage"],
+        [AS_BUILD_PATH, project_file, "-c", configuration, "-all", "-simulation"],
         capture_output=True,
         text=True,
-        timeout=60
+        timeout=600
     )
-    return result.stdout + result.stderr
+    output = result.stdout + result.stderr
+
+    summary = re.search(r"Build:\s*(\d+)\s*error\(s\)", output)
+    build_ok = summary is not None and int(summary.group(1)) == 0
+    if not build_ok:
+        return output
+
+    project_dir = os.path.dirname(project_file)
+    ruc_dir = os.path.join(project_dir, "Binaries", configuration, "RUCPackage")
+    os.makedirs(ruc_dir, exist_ok=True)
+    ruc_package = os.path.join(ruc_dir, "RUCPackage.zip")
+
+    ruc_result = subprocess.run(
+        [AS_RUC_PACKAGE_CREATOR_PATH, project_file, "-c", configuration, "-o", ruc_package],
+        capture_output=True,
+        text=True,
+        timeout=180
+    )
+    output += "\n" + ruc_result.stdout + ruc_result.stderr
+    return output
 
 
 @mcp.tool()
@@ -96,13 +136,20 @@ async def run_automation_studio_simulator(ruc_package: str, start_simulator: boo
 
     Returns:
         Execution output including ARsim destination path.
+
+    Note:
+        The PIL command "CreateARsimStructure" (AS4/RUC5) was removed in AS6/RUC6 - PVITransfer
+        rejects it with "Unknown command" and aborts (see B&R's PIL command incompatibility
+        AS4-vs-AS6 migration doc). AS6 replaces it with "OfflineCommissioning" ... "ARSim",
+        which also handles the "Start" flag itself, so no separate loader launch is needed here.
     """
     destination = tempfile.mkdtemp(prefix="ARSim_")
     pil_file = os.path.join(tempfile.gettempdir(), 'CreateARSim.pil')
 
-    pil_content = f'CreateARsimStructure "{ruc_package}", "{destination}", "Start={int(start_simulator)}"\n'
-    if start_simulator:
-        pil_content += 'Connection "/IF=TCPIP /SA=1", "/DA=2 /DAIP=127.0.0.1 /REPO=11160", "WT=120"'
+    pil_content = (
+        f'OfflineCommissioning "{ruc_package}", "ARSim", "", '
+        f'"DestinationDirectory=\'{destination}\'", "Start={int(start_simulator)}"'
+    )
 
     with open(pil_file, 'w') as f:
         f.write(pil_content)
@@ -122,14 +169,7 @@ async def run_automation_studio_simulator(ruc_package: str, start_simulator: boo
     if result.returncode == 0 and start_simulator:
         loader_path = os.path.join(destination, 'ar000loader.exe')
         if os.path.exists(loader_path):
-            subprocess.Popen(
-                loader_path,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.PIPE,
-                creationflags=0x00000008  # DETACHED_PROCESS
-            )
-            output += f"\nStarted simulator: {loader_path}"
+            output += f"\nSimulator started via OfflineCommissioning: {loader_path}"
         else:
             output += f"\nWarning: Loader not found at {loader_path}"
 
