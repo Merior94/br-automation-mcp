@@ -14,7 +14,7 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 This fork adapts the original server (written for Automation Studio 4.x) to work with Automation Studio 6.x / RUC6. Key differences from upstream:
 
-- **Increased build timeout** - `build_automation_studio_project`'s subprocess timeout was raised from 60s to 600s, since AS6 builds take longer than the original assumed.
+- **Increased build timeout** - `build_automation_studio_project`'s subprocess timeout was raised from 60s to 600s, since some bigger projects may take longer to build.
 - **Two-step RUC packaging** - On this AS6 install, `BR.AS.Build.exe -buildRUCPackage` combined with `-simulation` fails with `error 511: Missing command line option '-C'` (an undocumented AS6 quirk). Build and RUC packaging are now done as two separate steps: `BR.AS.Build.exe` with `-all -simulation`, followed by a separate `BR.AS.RUCPackageCreator.exe` call (its own 180s timeout), matching B&R's documented [command-line RUC workflow](https://help.br-automation.com/#/en/6/automationruntime/enhancedtransfer/handling/export_ruc/export_ruc_commandline.html).
 - **Build success detection** - `BR.AS.Build.exe` can exit with a non-zero return code even when the compile has 0 errors (e.g. due to security or licensing warnings). Success is now determined by parsing the `Build: N error(s)` summary line instead of trusting the process return code.
 - **Updated tool paths** for AS6/PVI6 installations:
@@ -22,7 +22,7 @@ This fork adapts the original server (written for Automation Studio 4.x) to work
   - `AS_RUC_PACKAGE_CREATOR_PATH` (new) -> `C:\Program Files (x86)\BRAutomation\AS6\bin-en\BR.AS.RUCPackageCreator.exe`
   - `PVI_TRANSFER_PATH` -> `C:\BrAutomation\PVI6\PVI\Tools\PVITransfer\PVITransfer.exe`
 - **Simulator launch via `OfflineCommissioning`** - The AS4/RUC5 PIL command `CreateARsimStructure` was removed in AS6/RUC6 (PVITransfer rejects it with `Unknown command`). It's replaced with the AS6 equivalent, `OfflineCommissioning ... "ARSim" ...`, which also starts the simulator itself, so there's no need to separately launch `ar000loader.exe` via `subprocess.Popen` anymore.
-- **Anonymous OPC UA by default** - `OPCUA_USERNAME` / `OPCUA_PASSWORD` now default to empty strings (anonymous connection) to match this project's `OpcUaMap.uad` configuration, instead of the original `Admin` / `password` defaults.
+- **Anonymous OPC UA by default** - `OPCUA_USERNAME` / `OPCUA_PASSWORD` now default to empty strings (anonymous connection), instead of the original `Admin` / `password` defaults.
 
 If you're targeting AS4.x, the upstream paths/commands should still apply as-is - check your AS/RUC version before carrying these changes over.
 
